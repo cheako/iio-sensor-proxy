@@ -57,7 +57,7 @@ process_scan (IIOSensorData data, DrvData *or_data)
 	readings.level = level;
 	if (scale)
 		readings.level *= scale;
-	readings.uses_lux = TRUE;
+	readings.uses_lux = FALSE;
 
 	//FIXME report errors
 	or_data->callback_func (&iio_buffer_light, (gpointer) &readings, or_data->user_data);
