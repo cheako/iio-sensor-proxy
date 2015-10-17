@@ -73,6 +73,68 @@ read_orientation (GIOChannel  * channel,
 
 	IIOSensorData buff;
 	IIOSensorData data;
+	struct {
+		union {
+			struct {
+				int8_t  a;
+				int8_t  b;
+			} a;
+			int16_t value;
+		} in_anglvel_x;
+		union {
+			struct {
+				int8_t  a;
+				int8_t  b;
+			} a;
+			int16_t value;
+		} in_anglvel_y;
+		union {
+			struct {
+				int8_t  a;
+				int8_t  b;
+			} a;
+			int16_t value;
+		} in_anglvel_z;
+		union {
+			struct {
+				int8_t  a;
+				int8_t  b;
+			} a;
+			int16_t value;
+		} in_accel_x;
+		union {
+			struct {
+				int8_t  a;
+				int8_t  b;
+			} a;
+			int16_t value;
+		} in_accel_y;
+		union {
+			struct {
+				int8_t  a;
+				int8_t  b;
+			} a;
+			int16_t value;
+		} in_accel_z;
+		union {
+			struct {
+				int8_t  a;
+				int8_t  b;
+				int8_t  c;
+				int8_t  d;
+				int8_t  e;
+				int8_t  f;
+				int8_t  g;
+				int8_t  h;
+			} a;
+			int64_t value;
+		} in_timestamp;
+		int8_t  a;
+		int8_t  b;
+		int8_t  c;
+		int8_t  d;
+		int8_t  e;
+	} *mydata;
 
 	gsize         buf_size      = or_data->buffer_data->scan_size;
 	static gsize  read_size_ctr = 0;
@@ -98,12 +160,13 @@ read_orientation (GIOChannel  * channel,
 
 	g_assert_cmpuint (status, ==, G_IO_STATUS_AGAIN);
 
-        if(data.data) {
+	if(data.data) {
+		mydata = (void*)data.data;
 		process_scan(data, or_data);
-		g_free (data.data);
+		g_free (mydata);
 	}
 
-        g_free (buff.data);
+	g_free (buff.data);
 
 	return G_SOURCE_CONTINUE;
 }
@@ -178,8 +241,8 @@ iio_buffer_accel_set_polling (gboolean state)
 
 static gboolean
 iio_buffer_accel_open (GUdevDevice        *device,
-		       ReadingsUpdateFunc  callback_func,
-		       gpointer            user_data)
+                       ReadingsUpdateFunc  callback_func,
+                       gpointer            user_data)
 {
 	char *trigger_name;
 	GError      *gerr = NULL;
@@ -207,7 +270,7 @@ iio_buffer_accel_open (GUdevDevice        *device,
 	drv_data->callback_func = callback_func;
 	drv_data->user_data = user_data;
 
-        drv_data->gio_r = g_io_channel_new_file (drv_data->dev_path, "r", &gerr);
+	drv_data->gio_r = g_io_channel_new_file (drv_data->dev_path, "r", &gerr);
 	if (gerr) {
 		g_error ("Unable to open file %s: %s", drv_data->dev_path, gerr->message);
 		g_error_free(gerr);
