@@ -19,7 +19,8 @@
 #define SCALE_TO_FF(scale) (scale * 256 / 9.81)
 
 typedef struct {
-	guint              timeout_id;
+	GIOChannel        *gio_r;
+	gulong             io_source;
 	ReadingsUpdateFunc callback_func;
 	gpointer           user_data;
 
@@ -34,29 +35,14 @@ static DrvData *drv_data = NULL;
 static int
 process_scan (IIOSensorData data, DrvData *or_data)
 {
-	int i;
 	int accel_x, accel_y, accel_z;
 	gdouble scale;
 	gboolean present_x, present_y, present_z;
 	AccelReadings readings;
 
-	if (data.read_size < 0) {
-		g_warning ("Couldn't read from device: %s", g_strerror (errno));
-		return 0;
-	}
-
-	/* Rather than read everything:
-	 * for (i = 0; i < data.read_size / or_data->scan_size; i++)...
-	 * Just read the last one */
-	i = (data.read_size / or_data->buffer_data->scan_size) - 1;
-	if (i < 0) {
-		g_debug ("Not enough data to read (read_size: %d scan_size: %d)", (int) data.read_size, or_data->buffer_data->scan_size);
-		return 0;
-	}
-
-	process_scan_1(data.data + or_data->buffer_data->scan_size*i, or_data->buffer_data, "in_accel_x", &accel_x, &scale, &present_x);
-	process_scan_1(data.data + or_data->buffer_data->scan_size*i, or_data->buffer_data, "in_accel_y", &accel_y, &scale, &present_y);
-	process_scan_1(data.data + or_data->buffer_data->scan_size*i, or_data->buffer_data, "in_accel_z", &accel_z, &scale, &present_z);
+	process_scan_1(data.data, or_data->buffer_data, "in_accel_x", &accel_x, &scale, &present_x);
+	process_scan_1(data.data, or_data->buffer_data, "in_accel_y", &accel_y, &scale, &present_y);
+	process_scan_1(data.data, or_data->buffer_data, "in_accel_z", &accel_z, &scale, &present_z);
 
 	g_debug ("Read from IIO: %d, %d, %d", accel_x, accel_y, accel_z);
 
@@ -75,36 +61,51 @@ process_scan (IIOSensorData data, DrvData *or_data)
 	return 1;
 }
 
-static void
-prepare_output (DrvData    *or_data,
-		const char *dev_dir_name,
-		const char *trigger_name)
+static gboolean
+read_orientation (GIOChannel  * channel,
+                  GIOCondition  condition,
+                  gpointer      user_data)
 {
+	DrvData      *or_data       = user_data;
+
+	GIOStatus     status;
+	GError       *gerr          = NULL;
+
+	IIOSensorData buff;
 	IIOSensorData data;
 
-	int fp, buf_len = 127;
+	gsize         buf_size      = or_data->buffer_data->scan_size;
+	static gsize  read_size_ctr = 0;
 
-	data.data = g_malloc(or_data->buffer_data->scan_size * buf_len);
+	g_assert_cmpuint (condition, ==, G_IO_IN);
 
-	/* Attempt to open non blocking to access dev */
-	fp = open (or_data->dev_path, O_RDONLY | O_NONBLOCK);
-	if (fp == -1) { /* If it isn't there make the node */
-		g_warning ("Failed to open %s : %s", or_data->dev_path, strerror(errno));
-		goto bail;
+	buff.data = g_malloc(buf_size);
+	data.data = NULL;
+
+	for (status = g_io_channel_read_chars (channel, buff.data, buf_size - read_size_ctr, (gsize*)&buff.read_size, &gerr);
+		status == G_IO_STATUS_NORMAL;
+		status = g_io_channel_read_chars (channel, buff.data, buf_size - read_size_ctr, (gsize*)&buff.read_size, &gerr))
+	{
+		read_size_ctr += buff.read_size;
+		if(read_size_ctr >= buf_size) read_size_ctr -= buff.read_size;
+		if(buff.read_size >= buf_size) {
+			if(data.data) g_free (data.data);
+			data.data = buff.data;
+			buff.data = g_malloc(buf_size);
+			data.read_size = buff.read_size;
+		}
 	}
 
-	/* Actually read the data */
-	data.read_size = read (fp, data.data, buf_len * or_data->buffer_data->scan_size);
-	if (data.read_size == -1 && errno == EAGAIN) {
-		g_debug ("No new data available");
-	} else {
+	g_assert_cmpuint (status, ==, G_IO_STATUS_AGAIN);
+
+        if(data.data) {
 		process_scan(data, or_data);
+		g_free (data.data);
 	}
 
-	close(fp);
+        g_free (buff.data);
 
-bail:
-	g_free(data.data);
+	return G_SOURCE_CONTINUE;
 }
 
 static char *
@@ -143,17 +144,6 @@ get_trigger_name (GUdevDevice *device)
 	return NULL;
 }
 
-
-static gboolean
-read_orientation (gpointer user_data)
-{
-	DrvData *data = user_data;
-
-	prepare_output (data, data->buffer_data->dev_dir_name, data->buffer_data->trigger_name);
-
-	return G_SOURCE_CONTINUE;
-}
-
 static gboolean
 iio_buffer_accel_discover (GUdevDevice *device)
 {
@@ -170,19 +160,19 @@ iio_buffer_accel_discover (GUdevDevice *device)
 static void
 iio_buffer_accel_set_polling (gboolean state)
 {
-	if (drv_data->timeout_id > 0 && state)
+	if (drv_data->io_source > 0 && state)
 		return;
-	if (drv_data->timeout_id == 0 && !state)
+	if (drv_data->io_source == 0 && !state)
 		return;
 
-	if (drv_data->timeout_id) {
-		g_source_remove (drv_data->timeout_id);
-		drv_data->timeout_id = 0;
+	if (drv_data->io_source) {
+		g_source_remove (drv_data->io_source);
+		drv_data->io_source = 0;
 	}
 
 	if (state) {
-		drv_data->timeout_id = g_timeout_add (700, read_orientation, drv_data);
-		g_source_set_name_by_id (drv_data->timeout_id, "[iio_buffer_accel_set_polling] read_orientation");
+		drv_data->io_source = g_io_add_watch (drv_data->gio_r, G_IO_IN, read_orientation, drv_data);
+		g_source_set_name_by_id (drv_data->io_source, "[iio_buffer_accel_set_nonblocking] read_orientation");
 	}
 }
 
@@ -192,6 +182,8 @@ iio_buffer_accel_open (GUdevDevice        *device,
 		       gpointer            user_data)
 {
 	char *trigger_name;
+	GError      *gerr = NULL;
+	GIOStatus    status;
 
 	drv_data = g_new0 (DrvData, 1);
 
@@ -215,6 +207,34 @@ iio_buffer_accel_open (GUdevDevice        *device,
 	drv_data->callback_func = callback_func;
 	drv_data->user_data = user_data;
 
+        drv_data->gio_r = g_io_channel_new_file (drv_data->dev_path, "r", &gerr);
+	if (gerr) {
+		g_error ("Unable to open file %s: %s", drv_data->dev_path, gerr->message);
+		g_error_free(gerr);
+		g_clear_pointer (&drv_data->buffer_data, buffer_drv_data_free);
+		g_clear_object (&drv_data->dev);
+		g_clear_pointer (&drv_data, g_free);
+		return FALSE;
+	}
+	g_io_channel_set_encoding (drv_data->gio_r, NULL, &gerr);
+	if (gerr) {
+		g_error ("g_io_channel_set_encoding: %s: %s", drv_data->dev_path, gerr->message);
+		g_error_free (gerr);
+		g_clear_pointer (&drv_data->buffer_data, buffer_drv_data_free);
+		g_io_channel_unref(drv_data->gio_r);
+		g_clear_object (&drv_data->dev);
+		g_clear_pointer (&drv_data, g_free);
+		return FALSE;
+	}
+	g_io_channel_set_buffer_size (drv_data->gio_r, 4096);
+
+	status = g_io_channel_set_flags (drv_data->gio_r, G_IO_FLAG_NONBLOCK, &gerr);
+	if (status == G_IO_STATUS_ERROR) {
+		g_warning ("g_io_channel_set_flags: %s: %s", drv_data->dev_path, gerr->message);
+		g_error_free (gerr);
+		gerr = NULL;
+	}
+
 	return TRUE;
 }
 
@@ -223,6 +243,7 @@ iio_buffer_accel_close (void)
 {
 	iio_buffer_accel_set_polling (FALSE);
 	g_clear_pointer (&drv_data->buffer_data, buffer_drv_data_free);
+	g_io_channel_unref(drv_data->gio_r);
 	g_clear_object (&drv_data->dev);
 	g_clear_pointer (&drv_data, g_free);
 }
