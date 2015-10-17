@@ -602,7 +602,7 @@ accel_changed_func (SensorDriver *driver,
 
 		tmp = data->previous_orientation;
 		data->previous_orientation = orientation;
-		send_dbus_event (data, PROP_ACCELEROMETER_ORIENTATION);
+		// send_dbus_event (data, PROP_ACCELEROMETER_ORIENTATION);
 		g_debug ("Emitted orientation changed: from %s to %s",
 			 orientation_to_string (tmp),
 			 orientation_to_string (data->previous_orientation));
